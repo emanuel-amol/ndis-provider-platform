@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  # Database
+  database:
+    image: postgres:15
+    container_name: ndis-database
+    environment:
+      POSTGRES_DB: ndis_platform
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+      - ./database/sample_data.sql:/docker-entrypoint-initdb.d/02-sample.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ../deployment/Dockerfile.backend
+    container_name: ndis-backend
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@database:5432/ndis_platform
+      - JWT_SECRET_KEY=your-super-secret-jwt-key-change-this
+      - FLASK_ENV=development
+    ports:
+      - "5000:5000"
+    depends_on:
+      database:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: python app.py
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../deployment/Dockerfile.frontend
+    container_name: ndis-frontend
+    environment:
+      - REACT_APP_API_URL=http://localhost:5000/api
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+  # Automation Service (Aryan's work)
+  automation:
+    build:
+      context: ./automation
+      dockerfile: ../deployment/Dockerfile.automation
+    container_name: ndis-automation
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@database:5432/ndis_platform
+    depends_on:
+      database:
+        condition: service_healthy
+    volumes:
+      - ./automation:/app
+
+volumes:
+  postgres_data:
+
+networks:
+  default:
+    name: ndis-network

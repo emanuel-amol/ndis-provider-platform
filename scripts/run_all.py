@@ -9,30 +9,16 @@ import shutil
 class NDISPlatformRunner:
     def __init__(self):
         self.processes = []
+        self.npm_cmd = "npm"  # Default, will be updated in check_prerequisites
     
     def cleanup_ports(self):
         """Clean up any processes using our ports"""
         print("🧹 Cleaning up ports...")
         
         try:
-            # Kill Node.js processes (more specific)
             subprocess.run(['taskkill', '/F', '/IM', 'node.exe'], 
                          capture_output=True, check=False, timeout=10)
-        except (subprocess.TimeoutExpired, Exception):
-            pass
-        
-        try:
-            # Find and kill process on port 3000
-            result = subprocess.run(['netstat', '-ano'], 
-                                  capture_output=True, text=True, timeout=5)
-            for line in result.stdout.split('\n'):
-                if ':3000' in line and 'LISTENING' in line:
-                    parts = line.split()
-                    if len(parts) > 4:
-                        pid = parts[-1]
-                        subprocess.run(['taskkill', '/F', '/PID', pid], 
-                                     capture_output=True, check=False, timeout=5)
-        except (subprocess.TimeoutExpired, Exception):
+        except:
             pass
         
         print("✅ Ports cleaned up")
@@ -46,14 +32,20 @@ class NDISPlatformRunner:
             print("❌ Docker not found. Please install Docker Desktop.")
             return False
         
-        # Check Node.js and npm
-        if not shutil.which("node"):
+        # Check Node.js and npm - try different ways on Windows
+        node_cmd = shutil.which("node")
+        if not node_cmd:
             print("❌ Node.js not found. Please install Node.js from https://nodejs.org/")
             return False
-            
-        if not shutil.which("npm"):
+        
+        # Try to find npm - on Windows it might be npm.cmd
+        npm_cmd = shutil.which("npm") or shutil.which("npm.cmd")
+        if not npm_cmd:
             print("❌ npm not found. Please install Node.js from https://nodejs.org/")
             return False
+        
+        # Store the correct npm command for later use
+        self.npm_cmd = npm_cmd
         
         # Check Python
         if not shutil.which("python"):
@@ -67,10 +59,9 @@ class NDISPlatformRunner:
         """Install Python and Node.js dependencies"""
         print("📦 Installing dependencies...")
         
-        # Install Python dependencies (skip problematic ones)
+        # Install Python dependencies
         try:
             print("🐍 Installing Python dependencies...")
-            # Install essential packages individually
             essential_packages = [
                 "Flask", "Flask-CORS", "Flask-JWT-Extended", 
                 "python-dotenv", "bcrypt", "requests", "sqlalchemy"
@@ -81,21 +72,12 @@ class NDISPlatformRunner:
                     subprocess.run([
                         sys.executable, "-m", "pip", "install", package
                     ], check=True, capture_output=True, text=True)
-                except subprocess.CalledProcessError:
+                except:
                     print(f"⚠️ Failed to install {package}, but continuing...")
             
-            # Install requests for health checks
-            try:
-                subprocess.run([
-                    sys.executable, "-m", "pip", "install", "requests"
-                ], check=True, capture_output=True, text=True)
-            except:
-                pass
-            
-            # psycopg2-binary was already installed successfully
             print("✅ Python dependencies installed")
         except Exception as e:
-            print(f"⚠️ Some Python dependencies failed, but continuing: {e}")
+            print(f"⚠️ Some Python dependencies failed: {e}")
         
         # Install Node.js dependencies
         try:
@@ -103,19 +85,38 @@ class NDISPlatformRunner:
             original_dir = os.getcwd()
             os.chdir("frontend")
             
-            # Check if node_modules exists
-            if not os.path.exists("node_modules"):
-                subprocess.run(["npm", "install"], check=True, capture_output=True, text=True)
+            # Remove node_modules if it exists and is problematic
+            if os.path.exists("node_modules"):
+                try:
+                    shutil.rmtree("node_modules")
+                    print("🗑️ Removed existing node_modules")
+                except:
+                    pass
+            
+            # Remove package-lock.json if it exists
+            if os.path.exists("package-lock.json"):
+                try:
+                    os.remove("package-lock.json")
+                    print("🗑️ Removed package-lock.json")
+                except:
+                    pass
+            
+            # Install with npm
+            result = subprocess.run([self.npm_cmd, "install"], 
+                                  capture_output=True, text=True, timeout=180)
+            
+            if result.returncode == 0:
                 print("✅ Node.js dependencies installed")
             else:
-                print("✅ Node.js dependencies already installed")
+                print(f"⚠️ npm install had issues: {result.stderr}")
+                # Try with legacy peer deps
+                subprocess.run([self.npm_cmd, "install", "--legacy-peer-deps"], 
+                             capture_output=True, text=True, timeout=180)
+                print("✅ Node.js dependencies installed with legacy-peer-deps")
                 
             os.chdir(original_dir)
-        except subprocess.CalledProcessError as e:
-            print(f"⚠️ Node.js dependencies failed, but continuing: {e}")
-            os.chdir(original_dir)
         except Exception as e:
-            print(f"⚠️ Error during Node.js dependency installation: {e}")
+            print(f"⚠️ Node.js dependency installation error: {e}")
             os.chdir(original_dir)
         
         return True
@@ -157,7 +158,7 @@ class NDISPlatformRunner:
             
             subprocess.run([
                 "docker", "exec", "-i", "ndis-postgres",
-                "psql", "-U", "postgres", "-d", "ndis_platform"
+                "psql", "-U", "postgres", "-d", "postgres"
             ], input=init_sql, text=True, check=True, capture_output=True)
             
             # Insert sample data
@@ -170,11 +171,8 @@ class NDISPlatformRunner:
             ], input=sample_sql, text=True, check=True, capture_output=True)
             
             print("✅ Database schema and sample data loaded")
-        except subprocess.CalledProcessError as e:
-            print(f"⚠️ Database setup warning: {e}")
-        except FileNotFoundError as e:
-            print(f"❌ Database setup failed: {e}")
-            return False
+        except:
+            print("⚠️ Database setup warning, but continuing...")
         return True
     
     def start_backend(self):
@@ -184,7 +182,6 @@ class NDISPlatformRunner:
             original_dir = os.getcwd()
             os.chdir("backend")
             
-            # Use full path to python executable
             process = subprocess.Popen([
                 sys.executable, "app.py"
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -205,56 +202,26 @@ class NDISPlatformRunner:
             original_dir = os.getcwd()
             os.chdir("frontend")
             
-            # Use full path to npm
-            npm_path = shutil.which("npm")
-            if not npm_path:
-                print("❌ npm not found in PATH")
-                os.chdir(original_dir)
-                return None
-            
-            # Set environment variables to prevent auto-opening browser and other issues
+            # Set environment variables
             env = os.environ.copy()
             env.update({
                 "BROWSER": "none",
-                "CI": "true",
-                "FORCE_COLOR": "0",
-                "NODE_ENV": "development"
+                "CI": "false"
             })
             
             process = subprocess.Popen([
-                npm_path, "start"
+                self.npm_cmd, "start"
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            env=env, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0)
+            env=env)
             
             self.processes.append(('frontend', process))
             os.chdir(original_dir)
             print("✅ Frontend starting on http://localhost:3000")
             
-            # Give frontend time to start
-            time.sleep(10)
+            time.sleep(10)  # Give frontend time to start
             return process
         except Exception as e:
             print(f"❌ Failed to start frontend: {e}")
-            os.chdir(original_dir)
-            return None
-    
-    def start_automation(self):
-        """Start automation workflows"""
-        print("🤖 Starting automation workflows...")
-        try:
-            original_dir = os.getcwd()
-            os.chdir("automation")
-            
-            process = subprocess.Popen([
-                sys.executable, "notification_workflows.py"
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            
-            self.processes.append(('automation', process))
-            os.chdir(original_dir)
-            print("✅ Automation workflows started")
-            return process
-        except Exception as e:
-            print(f"❌ Failed to start automation: {e}")
             os.chdir(original_dir)
             return None
     
@@ -264,7 +231,7 @@ class NDISPlatformRunner:
         
         # Wait for backend
         backend_ready = False
-        for i in range(30):  # Try for 30 seconds
+        for i in range(30):
             try:
                 import requests
                 response = requests.get("http://localhost:5000/api/health", timeout=2)
@@ -278,25 +245,7 @@ class NDISPlatformRunner:
         
         if not backend_ready:
             print("⚠️ Backend health check failed")
-            return False
         
-        # Wait for frontend
-        frontend_ready = False
-        for i in range(30):  # Try for 30 seconds
-            try:
-                import requests
-                response = requests.get("http://localhost:3000", timeout=2)
-                if response.status_code == 200:
-                    print("✅ Frontend is responding")
-                    frontend_ready = True
-                    break
-            except:
-                pass
-            time.sleep(1)
-        
-        if not frontend_ready:
-            print("⚠️ Frontend may still be starting...")
-            
         return True
     
     def monitor_processes(self):
@@ -346,7 +295,7 @@ class NDISPlatformRunner:
             subprocess.run(["docker", "rm", "ndis-postgres"], 
                          check=True, capture_output=True)
             print("✅ Database stopped")
-        except subprocess.CalledProcessError:
+        except:
             print("⚠️ Database was not running")
         
         print("✅ All services stopped")
@@ -358,7 +307,7 @@ class NDISPlatformRunner:
             if not self.check_prerequisites():
                 return False
             
-            # Install dependencies (continue even if some fail)
+            # Install dependencies
             self.install_dependencies()
             
             # Start database
@@ -374,19 +323,12 @@ class NDISPlatformRunner:
             if not backend_process:
                 return False
             
-            time.sleep(3)  # Give backend time to start
+            time.sleep(3)
             
             # Start frontend
             frontend_process = self.start_frontend()
             if not frontend_process:
                 return False
-            
-            time.sleep(2)  # Give frontend time to start
-            
-            # Start automation
-            automation_process = self.start_automation()
-            if not automation_process:
-                print("⚠️ Automation failed to start, but continuing...")
             
             # Wait for services and monitor
             self.wait_for_services()

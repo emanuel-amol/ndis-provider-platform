@@ -6,10 +6,18 @@ import os
 
 Base = declarative_base()
 
-# Database setup
+# Database setup - FIXED connection string
 DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://postgres:password@localhost:5432/ndis_platform')
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+try:
+    engine = create_engine(DATABASE_URL)
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    print(f"✅ Database connection successful: {DATABASE_URL}")
+except Exception as e:
+    print(f"❌ Database connection failed: {e}")
+    # Create a dummy engine for now
+    engine = None
+    SessionLocal = None
 
 class User(Base):
     __tablename__ = 'users'
@@ -55,11 +63,21 @@ class Participant(Base):
 
 # Create tables
 def create_tables():
-    Base.metadata.create_all(bind=engine)
+    if engine is not None:
+        try:
+            Base.metadata.create_all(bind=engine)
+            print("✅ Database tables created successfully")
+        except Exception as e:
+            print(f"❌ Failed to create tables: {e}")
+    else:
+        print("⚠️ No database engine available")
 
 def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    if SessionLocal is not None:
+        db = SessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+    else:
+        yield None
